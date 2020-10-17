@@ -1,5 +1,6 @@
 # response
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/hslam/response)](https://pkg.go.dev/github.com/hslam/response)
+[![Build Status](https://travis-ci.org/hslam/response.svg?branch=master)](https://travis-ci.org/hslam/response)
 [![Go Report Card](https://goreportcard.com/badge/github.com/hslam/response)](https://goreportcard.com/report/github.com/hslam/response)
 [![LICENSE](https://img.shields.io/github/license/hslam/response.svg?style=flat-square)](https://github.com/hslam/response/blob/master/LICENSE)
 
