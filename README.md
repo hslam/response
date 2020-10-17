@@ -18,7 +18,7 @@ import "github.com/hslam/response"
 ```
 ### Usage
 #### Example
-```
+```go
 package main
 
 import (
@@ -67,7 +67,7 @@ func ListenAndServe(addr string, handler http.Handler) error {
 ```
 
 #### Netpoll Example
-```
+```go
 package main
 
 import (
