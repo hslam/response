@@ -1,3 +1,7 @@
+// Copyright (c) 2020 Meng Huang (mhboy@outlook.com)
+// This package is licensed under a MIT license that can be found in the LICENSE file.
+
+// Package response implements an HTTP response writer.
 package response
 
 import (
@@ -37,6 +41,7 @@ func (w *writer) Write(p []byte) (n int, err error) {
 	return 0, nil
 }
 
+// Response implements the http.ResponseWriter interface.
 type Response struct {
 	conn          net.Conn
 	wroteHeader   bool
@@ -50,7 +55,7 @@ type Response struct {
 	hijacked      bool
 }
 
-// NewResponse returns a http.ResponseWriter.
+// NewResponse returns a new response.
 func NewResponse(conn net.Conn) *Response {
 	w := writerPool.Get().(*bytes.Buffer)
 	res := responsePool.Get().(*Response)
@@ -62,7 +67,7 @@ func NewResponse(conn net.Conn) *Response {
 	return res
 }
 
-// FreeResponse frees a http.ResponseWriter
+// FreeResponse frees the response.
 func FreeResponse(w http.ResponseWriter) {
 	if w == nil {
 		return
@@ -88,16 +93,22 @@ func freeHeader(h http.Header) {
 	headerPool.Put(h)
 }
 
+// Hijack lets the caller take over the connection.
+// After a call to Hijack the HTTP server library
+// will not do anything else with the connection.
 func (w *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.hijacked = true
 	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), w.bufw), nil
 }
 
+// Header returns the header map that will be sent by
+// WriteHeader.
 func (w *Response) Header() http.Header {
 	w.calledHeader = true
 	return w.handlerHeader
 }
 
+// Write writes the data to the connection as part of an HTTP reply.
 func (w *Response) Write(data []byte) (n int, err error) {
 	if w.hijacked {
 		return 0, http.ErrHijacked
@@ -119,6 +130,8 @@ func (w *Response) Write(data []byte) (n int, err error) {
 	return w.w.Write(data)
 }
 
+// WriteHeader sends an HTTP response header with the provided
+// status code.
 func (w *Response) WriteHeader(code int) {
 	if w.hijacked {
 		return
@@ -131,6 +144,7 @@ func (w *Response) WriteHeader(code int) {
 	w.status = code
 }
 
+// Flush writes any buffered data to the underlying connection.
 func (w *Response) Flush() error {
 	if w.hijacked {
 		return http.ErrHijacked
