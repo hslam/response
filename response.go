@@ -40,7 +40,6 @@ type Response struct {
 	bufw          *bufio.Writer
 	w             *bytes.Buffer // buffers output
 	handlerHeader http.Header
-	calledHeader  bool  // handler accessed handlerHeader via Header
 	written       int64 // number of bytes written in body
 	contentLength int64 // explicitly-declared Content-Length; or -1
 	status        int
@@ -64,15 +63,13 @@ func FreeResponse(w http.ResponseWriter) {
 	if w == nil {
 		return
 	}
-	res, ok := w.(*Response)
-	if !ok {
-		return
+	if res, ok := w.(*Response); ok {
+		res.w.Reset()
+		writerPool.Put(res.w)
+		freeHeader(res.handlerHeader)
+		*res = Response{}
+		responsePool.Put(res)
 	}
-	res.w.Reset()
-	writerPool.Put(res.w)
-	freeHeader(res.handlerHeader)
-	*res = Response{}
-	responsePool.Put(res)
 }
 
 func freeHeader(h http.Header) {
@@ -96,7 +93,6 @@ func (w *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // Header returns the header map that will be sent by
 // WriteHeader.
 func (w *Response) Header() http.Header {
-	w.calledHeader = true
 	return w.handlerHeader
 }
 
