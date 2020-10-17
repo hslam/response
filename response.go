@@ -33,14 +33,6 @@ var headerPool = sync.Pool{
 	},
 }
 
-var fakeWriter = &writer{}
-
-type writer struct{}
-
-func (w *writer) Write(p []byte) (n int, err error) {
-	return 0, nil
-}
-
 // Response implements the http.ResponseWriter interface.
 type Response struct {
 	conn          net.Conn
