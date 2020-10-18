@@ -49,6 +49,7 @@ func ListenAndServe(addr string, handler http.Handler) error {
 		}
 		go func(conn net.Conn) {
 			reader := bufio.NewReader(conn)
+			rw := bufio.NewReadWriter(reader, bufio.NewWriter(conn))
 			var err error
 			var req *http.Request
 			for err == nil {
@@ -56,7 +57,53 @@ func ListenAndServe(addr string, handler http.Handler) error {
 				if err != nil {
 					break
 				}
-				res := response.NewResponse(conn)
+				res := response.NewResponse(conn, rw)
+				handler.ServeHTTP(res, req)
+				err = res.Flush()
+				response.FreeResponse(res)
+			}
+		}(conn)
+	}
+}
+package main
+
+import (
+	"bufio"
+	"github.com/hslam/mux"
+	"github.com/hslam/response"
+	"net"
+	"net/http"
+)
+
+func main() {
+	m := mux.New()
+	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hello World!\r\n"))
+	})
+	ListenAndServe(":8080", m)
+}
+
+func ListenAndServe(addr string, handler http.Handler) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		go func(conn net.Conn) {
+			reader := bufio.NewReader(conn)
+			rw := bufio.NewReadWriter(reader, bufio.NewWriter(conn))
+			var err error
+			var req *http.Request
+			for err == nil {
+				req, err = http.ReadRequest(reader)
+				if err != nil {
+					break
+				}
+				res := response.NewResponse(conn, rw)
 				handler.ServeHTTP(res, req)
 				err = res.Flush()
 				response.FreeResponse(res)
@@ -92,11 +139,14 @@ func ListenAndServe(addr string, handler http.Handler) error {
 	var h = &netpoll.ConnHandler{}
 	type Context struct {
 		reader  *bufio.Reader
+		rw      *bufio.ReadWriter
 		conn    net.Conn
 		reading sync.Mutex
 	}
 	h.SetUpgrade(func(conn net.Conn) (netpoll.Context, error) {
-		return &Context{reader: bufio.NewReader(conn), conn: conn}, nil
+		reader := bufio.NewReader(conn)
+		rw := bufio.NewReadWriter(reader, bufio.NewWriter(conn))
+		return &Context{reader: bufio.NewReader(conn), conn: conn, rw: rw}, nil
 	})
 	h.SetServe(func(context netpoll.Context) error {
 		ctx := context.(*Context)
@@ -106,7 +156,7 @@ func ListenAndServe(addr string, handler http.Handler) error {
 		if err != nil {
 			return err
 		}
-		res := response.NewResponse(ctx.conn)
+		res := response.NewResponse(ctx.conn, ctx.rw)
 		handler.ServeHTTP(res, req)
 		err = res.Flush()
 		response.FreeResponse(res)
