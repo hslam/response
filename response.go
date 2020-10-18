@@ -44,6 +44,7 @@ type Response struct {
 	contentLength int64 // explicitly-declared Content-Length; or -1
 	status        int
 	hijacked      bool
+	flushed       bool
 }
 
 // NewResponse returns a new response.
@@ -136,10 +137,14 @@ func (w *Response) WriteHeader(code int) {
 }
 
 // Flush writes any buffered data to the underlying connection.
-func (w *Response) Flush() error {
+func (w *Response) Flush() {
 	if w.hijacked {
-		return http.ErrHijacked
+		return
 	}
+	if w.flushed {
+		return
+	}
+	w.flushed = true
 	var setHeader header
 	setHeader.date = time.Now().UTC().Format(http.TimeFormat)
 	if cl := w.handlerHeader.Get("Content-Length"); cl != "" {
@@ -176,7 +181,7 @@ func (w *Response) Flush() error {
 	}
 	w.rw.Write(crlf)
 	w.rw.Write(body)
-	return w.rw.Flush()
+	w.rw.Flush()
 }
 
 var defaultContentType = "text/plain; charset=utf-8"
