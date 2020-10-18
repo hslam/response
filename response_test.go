@@ -38,7 +38,7 @@ func TestResponse(t *testing.T) {
 					if err != nil {
 						break
 					}
-					res := NewResponse(conn)
+					res := NewResponse(conn, nil)
 					m.ServeHTTP(res, req)
 					err = res.Flush()
 					FreeResponse(res)
