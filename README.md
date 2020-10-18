@@ -52,14 +52,14 @@ func ListenAndServe(addr string, handler http.Handler) error {
 			rw := bufio.NewReadWriter(reader, bufio.NewWriter(conn))
 			var err error
 			var req *http.Request
-			for err == nil {
+			for {
 				req, err = http.ReadRequest(reader)
 				if err != nil {
 					break
 				}
 				res := response.NewResponse(conn, rw)
 				handler.ServeHTTP(res, req)
-				err = res.Flush()
+				res.Flush()
 				response.FreeResponse(res)
 			}
 		}(conn)
@@ -112,9 +112,9 @@ func ListenAndServe(addr string, handler http.Handler) error {
 		}
 		res := response.NewResponse(ctx.conn, ctx.rw)
 		handler.ServeHTTP(res, req)
-		err = res.Flush()
+		res.Flush()
 		response.FreeResponse(res)
-		return err
+		return nil
 	})
 	return netpoll.ListenAndServe("tcp", addr, h)
 }
