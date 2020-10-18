@@ -37,7 +37,7 @@ var headerPool = sync.Pool{
 type Response struct {
 	conn          net.Conn
 	wroteHeader   bool
-	bufw          *bufio.Writer
+	rw            *bufio.ReadWriter
 	w             *bytes.Buffer // buffers output
 	handlerHeader http.Header
 	written       int64 // number of bytes written in body
@@ -47,13 +47,16 @@ type Response struct {
 }
 
 // NewResponse returns a new response.
-func NewResponse(conn net.Conn) *Response {
+func NewResponse(conn net.Conn, rw *bufio.ReadWriter) *Response {
+	if rw == nil {
+		rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+	}
 	w := writerPool.Get().(*bytes.Buffer)
 	res := responsePool.Get().(*Response)
 	res.handlerHeader = headerPool.Get().(http.Header)
 	res.contentLength = -1
 	res.conn = conn
-	res.bufw = bufio.NewWriter(conn)
+	res.rw = rw
 	res.w = w
 	return res
 }
@@ -87,7 +90,7 @@ func freeHeader(h http.Header) {
 // will not do anything else with the connection.
 func (w *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.hijacked = true
-	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), w.bufw), nil
+	return w.conn, w.rw, nil
 }
 
 // Header returns the header map that will be sent by
@@ -157,23 +160,23 @@ func (w *Response) Flush() error {
 	} else {
 		setHeader.contentType = defaultContentType
 	}
-	w.bufw.WriteString(fmt.Sprintf("HTTP/1.1 %03d %s\r\n", w.status, http.StatusText(w.status)))
-	setHeader.Write(w.bufw)
+	w.rw.WriteString(fmt.Sprintf("HTTP/1.1 %03d %s\r\n", w.status, http.StatusText(w.status)))
+	setHeader.Write(w.rw)
 	for key := range w.handlerHeader {
 		value := w.handlerHeader.Get(key)
 		if key == "Date" || key == "Content-Length" || key == "Content-Type" {
 			continue
 		}
 		if len(key) > 0 && len(value) > 0 {
-			w.bufw.WriteString(key)
-			w.bufw.Write(colonSpace)
-			w.bufw.WriteString(value)
-			w.bufw.Write(crlf)
+			w.rw.WriteString(key)
+			w.rw.Write(colonSpace)
+			w.rw.WriteString(value)
+			w.rw.Write(crlf)
 		}
 	}
-	w.bufw.Write(crlf)
-	w.bufw.Write(body)
-	return w.bufw.Flush()
+	w.rw.Write(crlf)
+	w.rw.Write(body)
+	return w.rw.Flush()
 }
 
 var defaultContentType = "text/plain; charset=utf-8"
@@ -241,13 +244,13 @@ var (
 // This method has a value receiver, despite the somewhat large size
 // of h, because it prevents an allocation. The escape analysis isn't
 // smart enough to realize this function doesn't mutate h.
-func (h header) Write(w *bufio.Writer) {
+func (h header) Write(rw *bufio.ReadWriter) {
 	for i, v := range []string{h.date, h.contentLength, h.contentType} {
 		if len(v) > 0 {
-			w.Write(headerKeys[i])
-			w.Write(colonSpace)
-			w.WriteString(v)
-			w.Write(crlf)
+			rw.Write(headerKeys[i])
+			rw.Write(colonSpace)
+			rw.WriteString(v)
+			rw.Write(crlf)
 		}
 	}
 }
