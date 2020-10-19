@@ -15,6 +15,15 @@ import (
 	"time"
 )
 
+const (
+	statusLine         = "HTTP/1.1 %03d %s\r\n"
+	contentLength      = "Content-Length"
+	contentType        = "Content-Type"
+	date               = "Date"
+	defaultContentType = "text/plain; charset=utf-8"
+	emptyString        = ""
+)
+
 var writerPool = sync.Pool{
 	New: func() interface{} {
 		return bytes.NewBuffer(nil)
@@ -31,35 +40,6 @@ var headerPool = sync.Pool{
 	New: func() interface{} {
 		return make(http.Header)
 	},
-}
-
-// Response implements the http.ResponseWriter interface.
-type Response struct {
-	conn          net.Conn
-	wroteHeader   bool
-	rw            *bufio.ReadWriter
-	w             *bytes.Buffer // buffers output
-	handlerHeader http.Header
-	written       int64 // number of bytes written in body
-	contentLength int64 // explicitly-declared Content-Length; or -1
-	status        int
-	hijacked      bool
-	flushed       bool
-}
-
-// NewResponse returns a new response.
-func NewResponse(conn net.Conn, rw *bufio.ReadWriter) *Response {
-	if rw == nil {
-		rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-	}
-	w := writerPool.Get().(*bytes.Buffer)
-	res := responsePool.Get().(*Response)
-	res.handlerHeader = headerPool.Get().(http.Header)
-	res.contentLength = -1
-	res.conn = conn
-	res.rw = rw
-	res.w = w
-	return res
 }
 
 // FreeResponse frees the response.
@@ -86,12 +66,34 @@ func freeHeader(h http.Header) {
 	headerPool.Put(h)
 }
 
-// Hijack lets the caller take over the connection.
-// After a call to Hijack the HTTP server library
-// will not do anything else with the connection.
-func (w *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	w.hijacked = true
-	return w.conn, w.rw, nil
+// Response implements the http.ResponseWriter interface.
+type Response struct {
+	conn          net.Conn
+	wroteHeader   bool
+	rw            *bufio.ReadWriter
+	w             *bytes.Buffer // buffers output
+	handlerHeader http.Header
+	setHeader     header
+	written       int64 // number of bytes written in body
+	contentLength int64 // explicitly-declared Content-Length; or -1
+	status        int
+	hijacked      bool
+	flushed       bool
+}
+
+// NewResponse returns a new response.
+func NewResponse(conn net.Conn, rw *bufio.ReadWriter) *Response {
+	if rw == nil {
+		rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
+	}
+	w := writerPool.Get().(*bytes.Buffer)
+	res := responsePool.Get().(*Response)
+	res.handlerHeader = headerPool.Get().(http.Header)
+	res.contentLength = -1
+	res.conn = conn
+	res.rw = rw
+	res.w = w
+	return res
 }
 
 // Header returns the header map that will be sent by
@@ -117,6 +119,7 @@ func (w *Response) Write(data []byte) (n int, err error) {
 	}
 	w.written += int64(lenData) // ignoring errors, for errorKludge
 	if w.contentLength != -1 && w.written > w.contentLength {
+		w.w.Reset()
 		return 0, http.ErrContentLength
 	}
 	return w.w.Write(data)
@@ -134,8 +137,27 @@ func (w *Response) WriteHeader(code int) {
 	w.wroteHeader = true
 	checkWriteHeaderCode(code)
 	w.status = code
+	if cl := w.handlerHeader.Get(contentLength); cl != emptyString {
+		v, err := strconv.ParseInt(cl, 10, 64)
+		if err == nil && v >= 0 {
+			w.contentLength = v
+			w.setHeader.contentLength = cl
+		}
+	}
 }
 
+// Hijack implements the http.Hijacker interface.
+//
+// Hijack lets the caller take over the connection.
+// After a call to Hijack the HTTP server library
+// will not do anything else with the connection.
+func (w *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijacked = true
+	return w.conn, w.rw, nil
+}
+
+// Flush implements the http.Flusher interface.
+//
 // Flush writes any buffered data to the underlying connection.
 func (w *Response) Flush() {
 	if w.hijacked {
@@ -145,31 +167,26 @@ func (w *Response) Flush() {
 		return
 	}
 	w.flushed = true
-	var setHeader header
-	setHeader.date = time.Now().UTC().Format(http.TimeFormat)
-	if cl := w.handlerHeader.Get("Content-Length"); cl != "" {
-		v, err := strconv.ParseInt(cl, 10, 64)
-		if err == nil && v >= 0 {
-			w.contentLength = v
-			setHeader.contentLength = cl
+	var body = w.w.Bytes()
+	w.setHeader.date = time.Now().UTC().Format(http.TimeFormat)
+	if len(body) > 0 {
+		if len(w.setHeader.contentLength) == 0 {
+			if w.contentLength == -1 {
+				w.contentLength = int64(len(body))
+			}
+			w.setHeader.contentLength = strconv.FormatInt(w.contentLength, 10)
+		}
+		if ct := w.handlerHeader.Get(contentType); ct != emptyString {
+			w.setHeader.contentType = ct
+		} else {
+			w.setHeader.contentType = defaultContentType
 		}
 	}
-
-	var body = w.w.Bytes()
-	if len(setHeader.contentLength) == 0 {
-		w.contentLength = int64(len(body))
-		setHeader.contentLength = strconv.FormatInt(w.contentLength, 10)
-	}
-	if ct := w.handlerHeader.Get("Content-Type"); ct != "" {
-		setHeader.contentType = ct
-	} else {
-		setHeader.contentType = defaultContentType
-	}
-	w.rw.WriteString(fmt.Sprintf("HTTP/1.1 %03d %s\r\n", w.status, http.StatusText(w.status)))
-	setHeader.Write(w.rw)
+	w.rw.WriteString(fmt.Sprintf(statusLine, w.status, http.StatusText(w.status)))
+	w.setHeader.Write(w.rw)
 	for key := range w.handlerHeader {
 		value := w.handlerHeader.Get(key)
-		if key == "Date" || key == "Content-Length" || key == "Content-Type" {
+		if key == date || key == contentLength || key == contentType {
 			continue
 		}
 		if len(key) > 0 && len(value) > 0 {
@@ -183,8 +200,6 @@ func (w *Response) Flush() {
 	w.rw.Write(body)
 	w.rw.Flush()
 }
-
-var defaultContentType = "text/plain; charset=utf-8"
 
 // bodyAllowed reports whether a Write is allowed for this response type.
 // It's illegal to call this before the header has been flushed.
