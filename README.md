@@ -57,9 +57,9 @@ func ListenAndServe(addr string, handler http.Handler) error {
 				if err != nil {
 					break
 				}
-				res := response.NewResponse(conn, rw)
+				res := response.NewResponse(req, conn, rw)
 				handler.ServeHTTP(res, req)
-				res.Flush()
+				res.FinishRequest()
 				response.FreeResponse(res)
 			}
 		}(conn)
@@ -110,9 +110,9 @@ func ListenAndServe(addr string, handler http.Handler) error {
 		if err != nil {
 			return err
 		}
-		res := response.NewResponse(ctx.conn, ctx.rw)
+		res := response.NewResponse(req, ctx.conn, ctx.rw)
 		handler.ServeHTTP(res, req)
-		res.Flush()
+		res.FinishRequest()
 		response.FreeResponse(res)
 		return nil
 	})
