@@ -6,28 +6,99 @@ package response
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"sync"
-	"time"
+	"sync/atomic"
 )
 
 const (
 	statusLine         = "HTTP/1.1 %03d %s\r\n"
+	chunk              = "%x\r\n"
 	contentLength      = "Content-Length"
+	transferEncoding   = "Transfer-Encoding"
 	contentType        = "Content-Type"
 	date               = "Date"
+	connection         = "Connection"
+	chunked            = "chunked"
 	defaultContentType = "text/plain; charset=utf-8"
+	head               = "HEAD"
 	emptyString        = ""
 )
 
-var writerPool = sync.Pool{
-	New: func() interface{} {
-		return bytes.NewBuffer(nil)
-	},
+var (
+	buffers = sync.Map{}
+	assign  int32
+)
+
+func assignPool(size int) *sync.Pool {
+	for {
+		if p, ok := buffers.Load(size); ok {
+			return p.(*sync.Pool)
+		}
+		if atomic.CompareAndSwapInt32(&assign, 0, 1) {
+			var pool = &sync.Pool{New: func() interface{} {
+				return make([]byte, size)
+			}}
+			buffers.Store(size, pool)
+			atomic.StoreInt32(&assign, 0)
+			return pool
+		}
+	}
+}
+
+var (
+	bufioReaderPool   sync.Pool
+	bufioWriter2kPool sync.Pool
+	bufioWriter4kPool sync.Pool
+)
+
+func NewBufioReader(r io.Reader) *bufio.Reader {
+	if v := bufioReaderPool.Get(); v != nil {
+		br := v.(*bufio.Reader)
+		br.Reset(r)
+		return br
+	}
+	// Note: if this reader size is ever changed, update
+	// TestHandlerBodyClose's assumptions.
+	return bufio.NewReader(r)
+}
+
+func FreeBufioReader(br *bufio.Reader) {
+	br.Reset(nil)
+	bufioReaderPool.Put(br)
+}
+
+func bufioWriterPool(size int) *sync.Pool {
+	switch size {
+	case 2 << 10:
+		return &bufioWriter2kPool
+	case 4 << 10:
+		return &bufioWriter4kPool
+	}
+	return nil
+}
+
+func NewBufioWriterSize(w io.Writer, size int) *bufio.Writer {
+	pool := bufioWriterPool(size)
+	if pool != nil {
+		if v := pool.Get(); v != nil {
+			bw := v.(*bufio.Writer)
+			bw.Reset(w)
+			return bw
+		}
+	}
+	return bufio.NewWriterSize(w, size)
+}
+
+func FreeBufioWriter(bw *bufio.Writer) {
+	bw.Reset(nil)
+	if pool := bufioWriterPool(bw.Available()); pool != nil {
+		pool.Put(bw)
+	}
 }
 
 var responsePool = sync.Pool{
@@ -48,9 +119,6 @@ func FreeResponse(w http.ResponseWriter) {
 		return
 	}
 	if res, ok := w.(*Response); ok {
-		res.w.Reset()
-		writerPool.Put(res.w)
-		freeHeader(res.handlerHeader)
 		*res = Response{}
 		responsePool.Put(res)
 	}
@@ -68,31 +136,51 @@ func freeHeader(h http.Header) {
 
 // Response implements the http.ResponseWriter interface.
 type Response struct {
+	req           *http.Request
 	conn          net.Conn
 	wroteHeader   bool
 	rw            *bufio.ReadWriter
-	w             *bytes.Buffer // buffers output
+	buffer        []byte
+	w             *bufio.Writer // buffers output
+	cw            chunkWriter
 	handlerHeader http.Header
 	setHeader     header
 	written       int64 // number of bytes written in body
+	noCache       bool
 	contentLength int64 // explicitly-declared Content-Length; or -1
 	status        int
 	hijacked      bool
-	flushed       bool
+	dateBuf       [len(TimeFormat)]byte
+	bufferPool    *sync.Pool
+	handlerDone   atomicBool // set true when the handler exits
+}
+
+type atomicBool int32
+
+func (b *atomicBool) isSet() bool { return atomic.LoadInt32((*int32)(b)) != 0 }
+func (b *atomicBool) setTrue()    { atomic.StoreInt32((*int32)(b), 1) }
+
+// NewResponse returns a new response.
+func NewResponse(req *http.Request, conn net.Conn, rw *bufio.ReadWriter) *Response {
+	return NewResponseSize(req, conn, rw, bufferBeforeChunkingSize)
 }
 
 // NewResponse returns a new response.
-func NewResponse(conn net.Conn, rw *bufio.ReadWriter) *Response {
+func NewResponseSize(req *http.Request, conn net.Conn, rw *bufio.ReadWriter, size int) *Response {
 	if rw == nil {
 		rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	}
-	w := writerPool.Get().(*bytes.Buffer)
+	bufferPool := assignPool(size)
 	res := responsePool.Get().(*Response)
 	res.handlerHeader = headerPool.Get().(http.Header)
 	res.contentLength = -1
+	res.req = req
 	res.conn = conn
 	res.rw = rw
-	res.w = w
+	res.cw.res = res
+	res.w = NewBufioWriterSize(&res.cw, size)
+	res.bufferPool = bufferPool
+	res.buffer = bufferPool.Get().([]byte)
 	return res
 }
 
@@ -117,10 +205,22 @@ func (w *Response) Write(data []byte) (n int, err error) {
 	if !w.bodyAllowed() {
 		return 0, http.ErrBodyNotAllowed
 	}
-	w.written += int64(lenData) // ignoring errors, for errorKludge
-	if w.contentLength != -1 && w.written > w.contentLength {
-		w.w.Reset()
-		return 0, http.ErrContentLength
+	if !w.cw.chunking {
+		offset := w.written
+		w.written += int64(lenData) // ignoring errors, for errorKludge
+		if w.contentLength != -1 && w.written > w.contentLength {
+			return 0, http.ErrContentLength
+		}
+		if !w.noCache && w.written <= int64(len(w.buffer)) {
+			copy(w.buffer[offset:w.written], data)
+			return
+		}
+		if !w.noCache {
+			w.noCache = true
+			if offset > 0 {
+				w.w.Write(w.buffer[:offset])
+			}
+		}
 	}
 	return w.w.Write(data)
 }
@@ -142,7 +242,12 @@ func (w *Response) WriteHeader(code int) {
 		if err == nil && v >= 0 {
 			w.contentLength = v
 			w.setHeader.contentLength = cl
+		} else {
+			w.handlerHeader.Del(contentLength)
 		}
+	} else if te := w.handlerHeader.Get(transferEncoding); te == chunked {
+		w.cw.chunking = true
+		w.setHeader.transferEncoding = chunked
 	}
 }
 
@@ -153,6 +258,9 @@ func (w *Response) WriteHeader(code int) {
 // will not do anything else with the connection.
 func (w *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.hijacked = true
+	if w.wroteHeader {
+		w.cw.flush()
+	}
 	return w.conn, w.rw, nil
 }
 
@@ -163,42 +271,36 @@ func (w *Response) Flush() {
 	if w.hijacked {
 		return
 	}
-	if w.flushed {
-		return
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
 	}
-	w.flushed = true
-	var body = w.w.Bytes()
-	w.setHeader.date = time.Now().UTC().Format(http.TimeFormat)
-	if len(body) > 0 {
-		if len(w.setHeader.contentLength) == 0 {
-			if w.contentLength == -1 {
-				w.contentLength = int64(len(body))
-			}
-			w.setHeader.contentLength = strconv.FormatInt(w.contentLength, 10)
-		}
-		if ct := w.handlerHeader.Get(contentType); ct != emptyString {
-			w.setHeader.contentType = ct
-		} else {
-			w.setHeader.contentType = defaultContentType
+	if !w.noCache {
+		if w.written > 0 {
+			w.w.Write(w.buffer[:w.written])
+			w.written = 0
 		}
 	}
-	w.rw.WriteString(fmt.Sprintf(statusLine, w.status, http.StatusText(w.status)))
-	w.setHeader.Write(w.rw)
-	for key := range w.handlerHeader {
-		value := w.handlerHeader.Get(key)
-		if key == date || key == contentLength || key == contentType {
-			continue
-		}
-		if len(key) > 0 && len(value) > 0 {
-			w.rw.WriteString(key)
-			w.rw.Write(colonSpace)
-			w.rw.WriteString(value)
-			w.rw.Write(crlf)
-		}
-	}
-	w.rw.Write(crlf)
-	w.rw.Write(body)
+	w.w.Flush()
+	w.cw.flush()
+}
+
+func (w *Response) FinishRequest() {
+	w.handlerDone.setTrue()
+	w.Flush()
+	w.w.Flush()
+	FreeBufioWriter(w.w)
+	w.cw.close()
 	w.rw.Flush()
+	// Close the body (regardless of w.closeAfterReply) so we can
+	// re-use its bufio.Reader later safely.
+	w.req.Body.Close()
+
+	if w.req.MultipartForm != nil {
+		w.req.MultipartForm.RemoveAll()
+	}
+	freeHeader(w.handlerHeader)
+	w.buffer = w.buffer[:cap(w.buffer)]
+	w.bufferPool.Put(w.buffer)
 }
 
 // bodyAllowed reports whether a Write is allowed for this response type.
@@ -238,39 +340,5 @@ func checkWriteHeaderCode(code int) {
 	// early. (We can't return an error from WriteHeader even if we wanted to.)
 	if code < 100 || code > 999 {
 		panic(fmt.Sprintf("invalid WriteHeader code %v", code))
-	}
-}
-
-type header struct {
-	date          string // written if not nil
-	contentLength string // written if not nil
-	contentType   string // written if not nil
-}
-
-// Sorted the same as Header.Write's loop.
-var headerKeys = [][]byte{
-	[]byte("Date"),
-	[]byte("Content-Length"),
-	[]byte("Content-Type"),
-}
-
-var (
-	crlf       = []byte("\r\n")
-	colonSpace = []byte(": ")
-)
-
-// Write writes the headers described in h to w.
-//
-// This method has a value receiver, despite the somewhat large size
-// of h, because it prevents an allocation. The escape analysis isn't
-// smart enough to realize this function doesn't mutate h.
-func (h header) Write(rw *bufio.ReadWriter) {
-	for i, v := range []string{h.date, h.contentLength, h.contentType} {
-		if len(v) > 0 {
-			rw.Write(headerKeys[i])
-			rw.Write(colonSpace)
-			rw.WriteString(v)
-			rw.Write(crlf)
-		}
 	}
 }

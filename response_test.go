@@ -38,9 +38,9 @@ func TestResponse(t *testing.T) {
 					if err != nil {
 						break
 					}
-					res := NewResponse(conn, nil)
+					res := NewResponse(req, conn, nil)
 					m.ServeHTTP(res, req)
-					res.Flush()
+					res.FinishRequest()
 					FreeResponse(res)
 				}
 			}(conn)
