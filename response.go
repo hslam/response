@@ -56,6 +56,7 @@ var (
 	bufioWriter4kPool sync.Pool
 )
 
+// NewBufioReader returns a new bufio.Reader with r.
 func NewBufioReader(r io.Reader) *bufio.Reader {
 	if v := bufioReaderPool.Get(); v != nil {
 		br := v.(*bufio.Reader)
@@ -67,6 +68,7 @@ func NewBufioReader(r io.Reader) *bufio.Reader {
 	return bufio.NewReader(r)
 }
 
+// FreeBufioReader frees the bufio.Reader.
 func FreeBufioReader(br *bufio.Reader) {
 	br.Reset(nil)
 	bufioReaderPool.Put(br)
@@ -82,6 +84,7 @@ func bufioWriterPool(size int) *sync.Pool {
 	return nil
 }
 
+// NewBufioWriterSize returns a new bufio.Writer with w and size.
 func NewBufioWriterSize(w io.Writer, size int) *bufio.Writer {
 	pool := bufioWriterPool(size)
 	if pool != nil {
@@ -94,6 +97,7 @@ func NewBufioWriterSize(w io.Writer, size int) *bufio.Writer {
 	return bufio.NewWriterSize(w, size)
 }
 
+// FreeBufioWriter frees the bufio.Writer.
 func FreeBufioWriter(bw *bufio.Writer) {
 	bw.Reset(nil)
 	if pool := bufioWriterPool(bw.Available()); pool != nil {
@@ -165,7 +169,8 @@ func NewResponse(req *http.Request, conn net.Conn, rw *bufio.ReadWriter) *Respon
 	return NewResponseSize(req, conn, rw, bufferBeforeChunkingSize)
 }
 
-// NewResponse returns a new response.
+// NewResponseSize returns a new response whose buffer has at least the specified
+// size.
 func NewResponseSize(req *http.Request, conn net.Conn, rw *bufio.ReadWriter, size int) *Response {
 	if rw == nil {
 		rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
@@ -284,6 +289,7 @@ func (w *Response) Flush() {
 	w.cw.flush()
 }
 
+// FinishRequest finishes a request.
 func (w *Response) FinishRequest() {
 	w.handlerDone.setTrue()
 	w.Flush()
