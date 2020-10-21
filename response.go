@@ -31,31 +31,44 @@ const (
 )
 
 var (
-	buffers = sync.Map{}
-	assign  int32
+	buffers           = sync.Map{}
+	bufioWriters      = sync.Map{}
+	bufioReaderPool   sync.Pool
+	assignBuffer      int32
+	assignBufioWriter int32
 )
 
-func assignPool(size int) *sync.Pool {
+func assignBufferPool(size int) *sync.Pool {
 	for {
 		if p, ok := buffers.Load(size); ok {
 			return p.(*sync.Pool)
 		}
-		if atomic.CompareAndSwapInt32(&assign, 0, 1) {
+		if atomic.CompareAndSwapInt32(&assignBuffer, 0, 1) {
 			var pool = &sync.Pool{New: func() interface{} {
 				return make([]byte, size)
 			}}
 			buffers.Store(size, pool)
-			atomic.StoreInt32(&assign, 0)
+			atomic.StoreInt32(&assignBuffer, 0)
 			return pool
 		}
 	}
 }
 
-var (
-	bufioReaderPool   sync.Pool
-	bufioWriter2kPool sync.Pool
-	bufioWriter4kPool sync.Pool
-)
+func assignBufioWriterPool(size int) *sync.Pool {
+	for {
+		if p, ok := bufioWriters.Load(size); ok {
+			return p.(*sync.Pool)
+		}
+		if atomic.CompareAndSwapInt32(&assignBufioWriter, 0, 1) {
+			var pool = &sync.Pool{New: func() interface{} {
+				return bufio.NewWriterSize(nil, size)
+			}}
+			bufioWriters.Store(size, pool)
+			atomic.StoreInt32(&assignBufioWriter, 0)
+			return pool
+		}
+	}
+}
 
 // NewBufioReader returns a new bufio.Reader with r.
 func NewBufioReader(r io.Reader) *bufio.Reader {
@@ -75,35 +88,23 @@ func FreeBufioReader(br *bufio.Reader) {
 	bufioReaderPool.Put(br)
 }
 
-func bufioWriterPool(size int) *sync.Pool {
-	switch size {
-	case 2 << 10:
-		return &bufioWriter2kPool
-	case 4 << 10:
-		return &bufioWriter4kPool
-	}
-	return nil
+// NewBufioWriter returns a new bufio.Writer with w.
+func NewBufioWriter(w io.Writer) *bufio.Writer {
+	return NewBufioWriterSize(w, bufferBeforeChunkingSize)
 }
 
 // NewBufioWriterSize returns a new bufio.Writer with w and size.
 func NewBufioWriterSize(w io.Writer, size int) *bufio.Writer {
-	pool := bufioWriterPool(size)
-	if pool != nil {
-		if v := pool.Get(); v != nil {
-			bw := v.(*bufio.Writer)
-			bw.Reset(w)
-			return bw
-		}
-	}
-	return bufio.NewWriterSize(w, size)
+	pool := assignBufioWriterPool(size)
+	bw := pool.Get().(*bufio.Writer)
+	bw.Reset(w)
+	return bw
 }
 
 // FreeBufioWriter frees the bufio.Writer.
 func FreeBufioWriter(bw *bufio.Writer) {
 	bw.Reset(nil)
-	if pool := bufioWriterPool(bw.Available()); pool != nil {
-		pool.Put(bw)
-	}
+	assignBufioWriterPool(bw.Available()).Put(bw)
 }
 
 var responsePool = sync.Pool{
@@ -176,7 +177,7 @@ func NewResponseSize(req *http.Request, conn net.Conn, rw *bufio.ReadWriter, siz
 	if rw == nil {
 		rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	}
-	bufferPool := assignPool(size)
+	bufferPool := assignBufferPool(size)
 	res := responsePool.Get().(*Response)
 	res.handlerHeader = headerPool.Get().(http.Header)
 	res.contentLength = -1
