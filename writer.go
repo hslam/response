@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
+
+const commaSpaceChunked = ", chunked"
 
 // This should be >= 512 bytes for DetectContentType,
 // but otherwise it's somewhat arbitrary.
@@ -94,7 +97,13 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	} else if cw.chunking {
 	} else if w.noCache {
 		cw.chunking = true
-		w.setHeader.transferEncoding = chunked
+		if len(w.setHeader.transferEncoding) > 0 {
+			if !strings.Contains(w.setHeader.transferEncoding, chunked) {
+				w.setHeader.transferEncoding += commaSpaceChunked
+			}
+		} else {
+			w.setHeader.transferEncoding = chunked
+		}
 	} else if w.handlerDone.isSet() && len(p) > 0 {
 		w.contentLength = int64(len(p))
 		w.setHeader.contentLength = strconv.FormatInt(w.contentLength, 10)
