@@ -15,6 +15,11 @@ func TestResponse(t *testing.T) {
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Hello World!\r\n"))
 	})
+	m.HandleFunc("/chunked", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.Write([]byte("Hello"))
+		w.Write([]byte(" World!\r\n"))
+	})
 	addr := ":8080"
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -30,7 +35,8 @@ func TestResponse(t *testing.T) {
 				break
 			}
 			go func(conn net.Conn) {
-				reader := bufio.NewReader(conn)
+				reader := NewBufioReader(conn)
+				writer := NewBufioWriter(conn)
 				var err error
 				var req *http.Request
 				for err == nil {
@@ -38,11 +44,59 @@ func TestResponse(t *testing.T) {
 					if err != nil {
 						break
 					}
-					res := NewResponse(req, conn, nil)
+					res := NewResponse(req, conn, bufio.NewReadWriter(reader, writer))
 					m.ServeHTTP(res, req)
 					res.FinishRequest()
 					FreeResponse(res)
 				}
+				FreeBufioReader(reader)
+				FreeBufioWriter(writer)
+			}(conn)
+		}
+	}()
+	time.Sleep(time.Millisecond * 10)
+	testHTTP("GET", "http://"+addr+"/", http.StatusOK, "Hello World!\r\n", t)
+	testHTTP("GET", "http://"+addr+"/chunked", http.StatusOK, "Hello World!\r\n", t)
+	ln.Close()
+	wg.Wait()
+}
+
+func TestResponseRW(t *testing.T) {
+	m := http.NewServeMux()
+	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hello World!\r\n"))
+	})
+	addr := ":8080"
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Error(err)
+	}
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				break
+			}
+			go func(conn net.Conn) {
+				reader := NewBufioReader(conn)
+				writer := NewBufioWriter(conn)
+				var err error
+				var req *http.Request
+				for err == nil {
+					req, err = http.ReadRequest(reader)
+					if err != nil {
+						break
+					}
+					res := NewResponse(req, conn, bufio.NewReadWriter(reader, writer))
+					m.ServeHTTP(res, req)
+					res.FinishRequest()
+					FreeResponse(res)
+				}
+				FreeBufioReader(reader)
+				FreeBufioWriter(writer)
 			}(conn)
 		}
 	}()
