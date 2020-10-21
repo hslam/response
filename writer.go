@@ -91,8 +91,8 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	w.setHeader.date = appendTime(cw.res.dateBuf[:0], time.Now())
 	if len(w.setHeader.contentLength) > 0 {
 		cw.chunking = false
-	} else if len(w.setHeader.transferEncoding) > 0 {
-	} else if te := w.handlerHeader.Get(transferEncoding); te == chunked || w.noCache {
+	} else if cw.chunking {
+	} else if w.noCache {
 		cw.chunking = true
 		w.setHeader.transferEncoding = chunked
 	} else if w.handlerDone.isSet() && len(p) > 0 {

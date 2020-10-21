@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -250,9 +251,11 @@ func (w *Response) WriteHeader(code int) {
 		} else {
 			w.handlerHeader.Del(contentLength)
 		}
-	} else if te := w.handlerHeader.Get(transferEncoding); te == chunked {
-		w.cw.chunking = true
-		w.setHeader.transferEncoding = chunked
+	} else if te := w.handlerHeader.Get(transferEncoding); te != emptyString {
+		w.setHeader.transferEncoding = te
+		if strings.Contains(te, chunked) {
+			w.cw.chunking = true
+		}
 	}
 }
 
