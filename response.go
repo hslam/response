@@ -155,7 +155,7 @@ type Response struct {
 	noCache       bool
 	contentLength int64 // explicitly-declared Content-Length; or -1
 	status        int
-	hijacked      bool
+	hijacked      atomicBool
 	dateBuf       [len(TimeFormat)]byte
 	bufferPool    *sync.Pool
 	handlerDone   atomicBool // set true when the handler exits
@@ -163,8 +163,8 @@ type Response struct {
 
 type atomicBool int32
 
-func (b *atomicBool) isSet() bool { return atomic.LoadInt32((*int32)(b)) != 0 }
-func (b *atomicBool) setTrue()    { atomic.StoreInt32((*int32)(b), 1) }
+func (b *atomicBool) isSet() bool   { return atomic.LoadInt32((*int32)(b)) != 0 }
+func (b *atomicBool) setTrue() bool { return atomic.CompareAndSwapInt32((*int32)(b), 0, 1) }
 
 // NewResponse returns a new response.
 func NewResponse(req *http.Request, conn net.Conn, rw *bufio.ReadWriter) *Response {
@@ -199,7 +199,7 @@ func (w *Response) Header() http.Header {
 
 // Write writes the data to the connection as part of an HTTP reply.
 func (w *Response) Write(data []byte) (n int, err error) {
-	if w.hijacked {
+	if w.hijacked.isSet() {
 		return 0, http.ErrHijacked
 	}
 	if !w.wroteHeader {
@@ -235,7 +235,7 @@ func (w *Response) Write(data []byte) (n int, err error) {
 // WriteHeader sends an HTTP response header with the provided
 // status code.
 func (w *Response) WriteHeader(code int) {
-	if w.hijacked {
+	if w.hijacked.isSet() {
 		return
 	}
 	if w.wroteHeader {
@@ -266,9 +266,11 @@ func (w *Response) WriteHeader(code int) {
 // After a call to Hijack the HTTP server library
 // will not do anything else with the connection.
 func (w *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	w.hijacked = true
 	if w.wroteHeader {
-		w.cw.flush()
+		w.FinishRequest()
+	}
+	if !w.hijacked.setTrue() {
+		return nil, nil, http.ErrHijacked
 	}
 	return w.conn, w.rw, nil
 }
@@ -277,7 +279,7 @@ func (w *Response) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 //
 // Flush writes any buffered data to the underlying connection.
 func (w *Response) Flush() {
-	if w.hijacked {
+	if w.hijacked.isSet() {
 		return
 	}
 	if !w.wroteHeader {
@@ -295,10 +297,13 @@ func (w *Response) Flush() {
 
 // FinishRequest finishes a request.
 func (w *Response) FinishRequest() {
-	w.handlerDone.setTrue()
+	if !w.handlerDone.setTrue() {
+		return
+	}
 	w.Flush()
 	w.w.Flush()
 	FreeBufioWriter(w.w)
+	w.w = nil
 	w.cw.close()
 	w.rw.Flush()
 	// Close the body (regardless of w.closeAfterReply) so we can
@@ -309,8 +314,10 @@ func (w *Response) FinishRequest() {
 		w.req.MultipartForm.RemoveAll()
 	}
 	freeHeader(w.handlerHeader)
+	w.handlerHeader = nil
 	w.buffer = w.buffer[:cap(w.buffer)]
 	w.bufferPool.Put(w.buffer)
+	w.buffer = nil
 }
 
 // bodyAllowed reports whether a Write is allowed for this response type.
