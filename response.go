@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -357,5 +358,206 @@ func checkWriteHeaderCode(code int) {
 	// early. (We can't return an error from WriteHeader even if we wanted to.)
 	if code < 100 || code > 999 {
 		panic(fmt.Sprintf("invalid WriteHeader code %v", code))
+	}
+}
+
+const commaSpaceChunked = ", chunked"
+
+// This should be >= 512 bytes for DetectContentType,
+// but otherwise it's somewhat arbitrary.
+const bufferBeforeChunkingSize = 2048
+
+// chunkWriter writes to a response's conn buffer, and is the writer
+// wrapped by the response.bufw buffered writer.
+//
+// chunkWriter also is responsible for finalizing the Header, including
+// conditionally setting the Content-Type and setting a Content-Length
+// in cases where the handler's final output is smaller than the buffer
+// size. It also conditionally adds chunk headers, when in chunking mode.
+//
+// See the comment above (*response).Write for the entire write flow.
+type chunkWriter struct {
+	res *Response
+
+	// wroteHeader tells whether the header's been written to "the
+	// wire" (or rather: w.conn.buf). this is unlike
+	// (*response).wroteHeader, which tells only whether it was
+	// logically written.
+	wroteHeader bool
+
+	// set by the writeHeader method:
+	chunking bool // using chunked transfer encoding for reply body
+}
+
+func (cw *chunkWriter) Write(p []byte) (n int, err error) {
+	if !cw.wroteHeader {
+		cw.writeHeader(p)
+	}
+	if cw.res.req.Method == head {
+		// Eat writes.
+		return len(p), nil
+	}
+	if cw.chunking {
+		_, err = fmt.Fprintf(cw.res.rw, chunk, len(p))
+		if err != nil {
+			cw.res.conn.Close()
+			return
+		}
+	}
+	n, err = cw.res.rw.Write(p)
+	if cw.chunking && err == nil {
+		_, err = cw.res.rw.Write(crlf)
+	}
+	if err != nil {
+		cw.res.conn.Close()
+	}
+	return
+}
+
+func (cw *chunkWriter) flush() {
+	if !cw.wroteHeader {
+		cw.writeHeader(nil)
+	}
+	cw.res.rw.Flush()
+}
+
+func (cw *chunkWriter) close() {
+	if !cw.wroteHeader {
+		cw.writeHeader(nil)
+	}
+	if cw.chunking {
+		bw := cw.res.rw // conn's bufio writer
+		// zero chunk to mark EOF
+		bw.WriteString("0\r\n")
+		//if trailers := cw.res.finalTrailers(); trailers != nil {
+		//	trailers.Write(bw) // the writer handles noting errors
+		//}
+		// final blank line after the trailers (whether
+		// present or not)
+		bw.WriteString("\r\n")
+	}
+}
+
+func (cw *chunkWriter) writeHeader(p []byte) {
+	if cw.wroteHeader {
+		return
+	}
+	cw.wroteHeader = true
+	var w = cw.res
+	w.setHeader.date = appendTime(cw.res.dateBuf[:0], time.Now())
+	if len(w.setHeader.contentLength) > 0 {
+		cw.chunking = false
+	} else if cw.chunking {
+	} else if w.noCache {
+		cw.chunking = true
+		if len(w.setHeader.transferEncoding) > 0 {
+			if !strings.Contains(w.setHeader.transferEncoding, chunked) {
+				w.setHeader.transferEncoding += commaSpaceChunked
+			}
+		} else {
+			w.setHeader.transferEncoding = chunked
+		}
+	} else if w.handlerDone.isSet() && len(p) > 0 {
+		w.contentLength = int64(len(p))
+		w.setHeader.contentLength = strconv.FormatInt(w.contentLength, 10)
+	}
+	if ct := w.handlerHeader.Get(contentType); ct != emptyString {
+		w.setHeader.contentType = ct
+	} else {
+		if !cw.chunking && len(p) > 0 {
+			w.setHeader.contentType = http.DetectContentType(p)
+		}
+	}
+	if co := w.handlerHeader.Get(connection); co != emptyString {
+		w.setHeader.connection = co
+	}
+	w.rw.WriteString(fmt.Sprintf(statusLine, w.status, http.StatusText(w.status)))
+	w.setHeader.Write(w.rw.Writer)
+	for key := range w.handlerHeader {
+		value := w.handlerHeader.Get(key)
+		if key == date || key == contentLength || key == transferEncoding || key == contentType || key == connection {
+			continue
+		}
+		if len(key) > 0 && len(value) > 0 {
+			w.rw.WriteString(key)
+			w.rw.Write(colonSpace)
+			w.rw.WriteString(value)
+			w.rw.Write(crlf)
+		}
+	}
+	w.rw.Write(crlf)
+}
+
+// TimeFormat is the time format to use when generating times in HTTP
+// headers. It is like time.RFC1123 but hard-codes GMT as the time
+// zone. The time being formatted must be in UTC for Format to
+// generate the correct format.
+//
+// For parsing this time format, see ParseTime.
+const TimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
+
+// appendTime is a non-allocating version of []byte(t.UTC().Format(TimeFormat))
+func appendTime(b []byte, t time.Time) []byte {
+	const days = "SunMonTueWedThuFriSat"
+	const months = "JanFebMarAprMayJunJulAugSepOctNovDec"
+
+	t = t.UTC()
+	yy, mm, dd := t.Date()
+	hh, mn, ss := t.Clock()
+	day := days[3*t.Weekday():]
+	mon := months[3*(mm-1):]
+
+	return append(b,
+		day[0], day[1], day[2], ',', ' ',
+		byte('0'+dd/10), byte('0'+dd%10), ' ',
+		mon[0], mon[1], mon[2], ' ',
+		byte('0'+yy/1000), byte('0'+(yy/100)%10), byte('0'+(yy/10)%10), byte('0'+yy%10), ' ',
+		byte('0'+hh/10), byte('0'+hh%10), ':',
+		byte('0'+mn/10), byte('0'+mn%10), ':',
+		byte('0'+ss/10), byte('0'+ss%10), ' ',
+		'G', 'M', 'T')
+}
+
+type header struct {
+	date             []byte
+	contentLength    string
+	contentType      string
+	connection       string
+	transferEncoding string
+}
+
+// Sorted the same as Header.Write's loop.
+var headerKeys = [][]byte{
+	[]byte("Content-Length"),
+	[]byte("Content-Type"),
+	[]byte("Connection"),
+	[]byte("Transfer-Encoding"),
+}
+var (
+	headerDate = []byte("Date: ")
+)
+var (
+	crlf       = []byte("\r\n")
+	colonSpace = []byte(": ")
+)
+
+// Write writes the headers described in h to w.
+//
+// This method has a value receiver, despite the somewhat large size
+// of h, because it prevents an allocation. The escape analysis isn't
+// smart enough to realize this function doesn't mutate h.
+func (h header) Write(w *bufio.Writer) {
+	if h.date != nil {
+		w.Write(headerDate)
+		w.Write(h.date)
+		w.Write(crlf)
+	}
+	for i, v := range []string{h.contentLength, h.contentType, h.connection, h.transferEncoding} {
+		if len(v) > 0 {
+			w.Write(headerKeys[i])
+			w.Write(colonSpace)
+			w.WriteString(v)
+			w.Write(crlf)
+		}
 	}
 }
