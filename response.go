@@ -428,13 +428,13 @@ func (cw *chunkWriter) close() {
 	if cw.chunking {
 		bw := cw.res.rw // conn's bufio writer
 		// zero chunk to mark EOF
-		bw.WriteString("0\r\n")
+		bw.Write(zerocrlf)
 		//if trailers := cw.res.finalTrailers(); trailers != nil {
 		//	trailers.Write(bw) // the writer handles noting errors
 		//}
 		// final blank line after the trailers (whether
 		// present or not)
-		bw.WriteString("\r\n")
+		bw.Write(crlf)
 	}
 }
 
@@ -537,6 +537,7 @@ var (
 	headerDate = []byte("Date: ")
 )
 var (
+	zerocrlf   = []byte("0\r\n")
 	crlf       = []byte("\r\n")
 	colonSpace = []byte(": ")
 )
