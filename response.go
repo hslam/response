@@ -148,7 +148,6 @@ type Response struct {
 	wroteHeader   bool
 	rw            *bufio.ReadWriter
 	buffer        []byte
-	w             *bufio.Writer // buffers output
 	cw            chunkWriter
 	handlerHeader http.Header
 	setHeader     header
@@ -186,7 +185,6 @@ func NewResponseSize(req *http.Request, conn net.Conn, rw *bufio.ReadWriter, siz
 	res.conn = conn
 	res.rw = rw
 	res.cw.res = res
-	res.w = NewBufioWriterSize(&res.cw, size)
 	res.bufferPool = bufferPool
 	res.buffer = bufferPool.Get().([]byte)
 	return res
@@ -226,11 +224,11 @@ func (w *Response) Write(data []byte) (n int, err error) {
 		if !w.noCache {
 			w.noCache = true
 			if offset > 0 {
-				w.w.Write(w.buffer[:offset])
+				w.cw.Write(w.buffer[:offset])
 			}
 		}
 	}
-	return w.w.Write(data)
+	return w.cw.Write(data)
 }
 
 // WriteHeader sends an HTTP response header with the provided
@@ -288,11 +286,10 @@ func (w *Response) Flush() {
 	}
 	if !w.noCache {
 		if w.written > 0 {
-			w.w.Write(w.buffer[:w.written])
+			w.cw.Write(w.buffer[:w.written])
 			w.written = 0
 		}
 	}
-	w.w.Flush()
 	w.cw.flush()
 }
 
@@ -302,9 +299,6 @@ func (w *Response) FinishRequest() {
 		return
 	}
 	w.Flush()
-	w.w.Flush()
-	FreeBufioWriter(w.w)
-	w.w = nil
 	w.cw.close()
 	w.rw.Flush()
 	// Close the body (regardless of w.closeAfterReply) so we can
