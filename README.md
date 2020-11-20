@@ -32,7 +32,7 @@ import (
 func main() {
 	m := mux.New()
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Hello World!\r\n"))
+		w.Write([]byte("Hello World"))
 	})
 	ListenAndServe(":8080", m)
 }
@@ -84,7 +84,7 @@ import (
 func main() {
 	m := mux.New()
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Hello World!\r\n"))
+		w.Write([]byte("Hello World"))
 	})
 	ListenAndServe(":8080", m)
 }
@@ -123,7 +123,7 @@ func ListenAndServe(addr string, handler http.Handler) error {
 
 curl -XGET http://localhost:8080
 ```
-Hello World!
+Hello World
 ```
 
 ### License
