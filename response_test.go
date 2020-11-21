@@ -10,6 +10,26 @@ import (
 	"time"
 )
 
+func testHTTP(method, url string, status int, result string, t *testing.T) {
+	var req *http.Request
+	req, _ = http.NewRequest(method, url, nil)
+	client := &http.Client{
+		Transport: &http.Transport{
+			MaxConnsPerHost:   1,
+			DisableKeepAlives: true,
+		},
+	}
+	if resp, err := client.Do(req); err != nil {
+		t.Error(err)
+	} else if resp.StatusCode != status {
+		t.Error(resp.StatusCode)
+	} else if body, err := ioutil.ReadAll(resp.Body); err != nil {
+		t.Error(err)
+	} else if string(body) != result {
+		t.Error(string(body))
+	}
+}
+
 func TestResponse(t *testing.T) {
 	m := http.NewServeMux()
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -104,20 +124,6 @@ func TestResponseRW(t *testing.T) {
 	testHTTP("GET", "http://"+addr+"/", http.StatusOK, "Hello World!\r\n", t)
 	ln.Close()
 	wg.Wait()
-}
-
-func testHTTP(method, url string, status int, result string, t *testing.T) {
-	var req *http.Request
-	req, _ = http.NewRequest(method, url, nil)
-	if resp, err := http.DefaultClient.Do(req); err != nil {
-		t.Error(err)
-	} else if resp.StatusCode != status {
-		t.Error(resp.StatusCode)
-	} else if body, err := ioutil.ReadAll(resp.Body); err != nil {
-		t.Error(err)
-	} else if string(body) != result {
-		t.Error(string(body))
-	}
 }
 
 func TestFreeResponse(t *testing.T) {
