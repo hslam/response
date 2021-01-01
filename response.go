@@ -15,10 +15,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 const (
-	statusLine         = "HTTP/1.1 %03d %s\r\n"
+	httpVersion        = "HTTP/1.1 "
 	chunk              = "%x\r\n"
 	contentLength      = "Content-Length"
 	transferEncoding   = "Transfer-Encoding"
@@ -157,8 +158,11 @@ type Response struct {
 	status        int
 	hijacked      atomicBool
 	dateBuf       [len(TimeFormat)]byte
-	bufferPool    *sync.Pool
-	handlerDone   atomicBool // set true when the handler exits
+	clenBuf       [10]byte
+	statusBuf     [3]byte
+
+	bufferPool  *sync.Pool
+	handlerDone atomicBool // set true when the handler exits
 }
 
 type atomicBool int32
@@ -438,6 +442,8 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	}
 	cw.wroteHeader = true
 	var w = cw.res
+	isHEAD := w.req.Method == "HEAD"
+
 	w.setHeader.date = appendTime(cw.res.dateBuf[:0], time.Now())
 	if len(w.setHeader.contentLength) > 0 {
 		cw.chunking = false
@@ -451,9 +457,10 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 		} else {
 			w.setHeader.transferEncoding = chunked
 		}
-	} else if w.handlerDone.isSet() && len(p) > 0 {
+	} else if w.handlerDone.isSet() && bodyAllowedForStatus(w.status) && w.handlerHeader.Get(contentLength) == "" && (!w.noCache || !isHEAD || len(p) > 0) {
 		w.contentLength = int64(len(p))
-		w.setHeader.contentLength = strconv.FormatInt(w.contentLength, 10)
+		var clen = strconv.AppendInt(w.clenBuf[:0], int64(len(p)), 10)
+		w.setHeader.contentLength = *(*string)(unsafe.Pointer(&clen))
 	}
 	if ct := w.handlerHeader.Get(contentType); ct != emptyString {
 		w.setHeader.contentType = ct
@@ -465,7 +472,16 @@ func (cw *chunkWriter) writeHeader(p []byte) {
 	if co := w.handlerHeader.Get(connection); co != emptyString {
 		w.setHeader.connection = co
 	}
-	w.rw.WriteString(fmt.Sprintf(statusLine, w.status, http.StatusText(w.status)))
+	w.rw.WriteString(httpVersion)
+	if text := http.StatusText(w.status); len(text) > 0 {
+		w.rw.Write(strconv.AppendInt(w.statusBuf[:0], int64(w.status), 10))
+		w.rw.WriteByte(' ')
+		w.rw.WriteString(text)
+		w.rw.Write(crlf)
+	} else {
+		// don't worry about performance
+		fmt.Fprintf(w.rw, "%03d status code %d\r\n", w.status, w.status)
+	}
 	w.setHeader.Write(w.rw.Writer)
 	for key := range w.handlerHeader {
 		value := w.handlerHeader.Get(key)
