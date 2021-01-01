@@ -222,7 +222,7 @@ func (w *Response) Write(data []byte) (n int, err error) {
 			return 0, http.ErrContentLength
 		}
 		if !w.noCache && w.written <= int64(len(w.buffer)) {
-			copy(w.buffer[offset:w.written], data)
+			n = copy(w.buffer[offset:w.written], data)
 			return
 		}
 		if !w.noCache {
