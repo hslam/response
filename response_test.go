@@ -84,49 +84,9 @@ func TestResponse(t *testing.T) {
 	wg.Wait()
 }
 
-func TestResponseRW(t *testing.T) {
-	m := http.NewServeMux()
-	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Hello World!\r\n"))
-	})
-	addr := ":8080"
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Error(err)
-	}
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				break
-			}
-			go func(conn net.Conn) {
-				reader := NewBufioReader(conn)
-				writer := NewBufioWriter(conn)
-				var err error
-				var req *http.Request
-				for err == nil {
-					req, err = http.ReadRequest(reader)
-					if err != nil {
-						break
-					}
-					res := NewResponse(req, conn, bufio.NewReadWriter(reader, writer))
-					m.ServeHTTP(res, req)
-					res.FinishRequest()
-					FreeResponse(res)
-				}
-				FreeBufioReader(reader)
-				FreeBufioWriter(writer)
-			}(conn)
-		}
-	}()
-	time.Sleep(time.Millisecond * 10)
-	testHTTP("GET", "http://"+addr+"/", http.StatusOK, "Hello World!\r\n", t)
-	ln.Close()
-	wg.Wait()
+func TestNewBufioReader(t *testing.T) {
+	reader := NewBufioReader(nil)
+	FreeBufioReader(reader)
 }
 
 func TestFreeResponse(t *testing.T) {
