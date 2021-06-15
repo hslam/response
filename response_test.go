@@ -35,6 +35,11 @@ func testHTTP(method, url string, status int, result string, t *testing.T) {
 
 func TestResponse(t *testing.T) {
 	m := http.NewServeMux()
+	length := 1024 * 64
+	var msg = make([]byte, length)
+	for i := 0; i < length; i++ {
+		msg[i] = 'a'
+	}
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Hello World!\r\n"))
 	})
@@ -42,6 +47,9 @@ func TestResponse(t *testing.T) {
 		w.Header().Set("Transfer-Encoding", "chunked")
 		w.Write([]byte("Hello"))
 		w.Write([]byte(" World!\r\n"))
+	})
+	m.HandleFunc("/msg", func(w http.ResponseWriter, r *http.Request) {
+		w.Write(msg)
 	})
 	addr := ":8080"
 	ln, err := net.Listen("tcp", addr)
@@ -80,6 +88,7 @@ func TestResponse(t *testing.T) {
 	time.Sleep(time.Millisecond * 10)
 	testHTTP("GET", "http://"+addr+"/", http.StatusOK, "Hello World!\r\n", t)
 	testHTTP("GET", "http://"+addr+"/chunked", http.StatusOK, "Hello World!\r\n", t)
+	testHTTP("GET", "http://"+addr+"/msg", http.StatusOK, string(msg), t)
 	ln.Close()
 	wg.Wait()
 }
