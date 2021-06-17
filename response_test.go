@@ -5,9 +5,13 @@ package response
 
 import (
 	"bufio"
+	"bytes"
+	"io"
 	"io/ioutil"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -15,13 +19,63 @@ import (
 
 func testHTTP(method, url string, status int, result string, t *testing.T) {
 	var req *http.Request
-	req, _ = http.NewRequest(method, url, nil)
+	var err error
+	req, err = http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Error(err)
+	}
 	client := &http.Client{
 		Transport: &http.Transport{
 			MaxConnsPerHost:   1,
 			DisableKeepAlives: true,
 		},
 	}
+	if resp, err := client.Do(req); err != nil {
+		t.Error(err)
+	} else if resp.StatusCode != status {
+		t.Error(resp.StatusCode)
+	} else if body, err := ioutil.ReadAll(resp.Body); err != nil {
+		t.Error(err)
+	} else if string(body) != result {
+		t.Error(string(body))
+	}
+}
+
+func testMultipart(url string, status int, result string, values map[string]io.Reader, t *testing.T) {
+	var b bytes.Buffer
+	var err error
+	w := multipart.NewWriter(&b)
+	for key, r := range values {
+		var fw io.Writer
+		if x, ok := r.(io.Closer); ok {
+			defer x.Close()
+		}
+		if x, ok := r.(*os.File); ok {
+			if fw, err = w.CreateFormFile(key, x.Name()); err != nil {
+				t.Error(err)
+			}
+		} else {
+			if fw, err = w.CreateFormField(key); err != nil {
+				t.Error(err)
+			}
+		}
+		if _, err = io.Copy(fw, r); err != nil {
+			t.Error(err)
+		}
+	}
+	w.Close()
+	var req *http.Request
+	req, err = http.NewRequest("POST", url, &b)
+	if err != nil {
+		t.Error(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			MaxConnsPerHost:   1,
+			DisableKeepAlives: true,
+		},
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
 	if resp, err := client.Do(req); err != nil {
 		t.Error(err)
 	} else if resp.StatusCode != status {
@@ -50,6 +104,13 @@ func TestResponse(t *testing.T) {
 	})
 	m.HandleFunc("/msg", func(w http.ResponseWriter, r *http.Request) {
 		w.Write(msg)
+	})
+	m.HandleFunc("/multipart", func(w http.ResponseWriter, r *http.Request) {
+		r.ParseMultipartForm(1024)
+		mf := r.MultipartForm
+		if mf != nil {
+			w.Write([]byte(mf.Value["value"][0]))
+		}
 	})
 	addr := ":8080"
 	ln, err := net.Listen("tcp", addr)
@@ -89,6 +150,9 @@ func TestResponse(t *testing.T) {
 	testHTTP("GET", "http://"+addr+"/", http.StatusOK, "Hello World!\r\n", t)
 	testHTTP("GET", "http://"+addr+"/chunked", http.StatusOK, "Hello World!\r\n", t)
 	testHTTP("GET", "http://"+addr+"/msg", http.StatusOK, string(msg), t)
+	values := make(map[string]io.Reader)
+	values["value"] = bytes.NewReader(msg)
+	testMultipart("http://"+addr+"/multipart", http.StatusOK, string(msg), values, t)
 	ln.Close()
 	wg.Wait()
 }
