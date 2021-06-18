@@ -112,6 +112,9 @@ func TestResponse(t *testing.T) {
 			w.Write([]byte(mf.Value["value"][0]))
 		}
 	})
+	m.HandleFunc("/error", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	})
 	addr := ":8080"
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -150,6 +153,7 @@ func TestResponse(t *testing.T) {
 	testHTTP("GET", "http://"+addr+"/", http.StatusOK, "Hello World!\r\n", t)
 	testHTTP("GET", "http://"+addr+"/chunked", http.StatusOK, "Hello World!\r\n", t)
 	testHTTP("GET", "http://"+addr+"/msg", http.StatusOK, string(msg), t)
+	testHTTP("GET", "http://"+addr+"/error", http.StatusBadRequest, "", t)
 	values := make(map[string]io.Reader)
 	values["value"] = bytes.NewReader(msg)
 	testMultipart("http://"+addr+"/multipart", http.StatusOK, string(msg), values, t)
