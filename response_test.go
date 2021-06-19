@@ -41,6 +41,37 @@ func testHTTP(method, url string, status int, result string, t *testing.T) {
 	}
 }
 
+func testHeader(method, url string, status int, result string, header map[string]string, t *testing.T) {
+	var req *http.Request
+	var err error
+	req, err = http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Error(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			MaxConnsPerHost:   1,
+			DisableKeepAlives: true,
+		},
+	}
+	if resp, err := client.Do(req); err != nil {
+		t.Error(err)
+	} else if resp.StatusCode != status {
+		t.Error(resp.StatusCode)
+	} else if body, err := ioutil.ReadAll(resp.Body); err != nil {
+		t.Error(err)
+	} else if string(body) != result {
+		t.Error(string(body))
+	} else {
+		for k, v := range header {
+			value := resp.Header.Get(k)
+			if value != v {
+				t.Error(k, v, value)
+			}
+		}
+	}
+}
+
 func testMultipart(url string, status int, result string, values map[string]io.Reader, t *testing.T) {
 	var b bytes.Buffer
 	var err error
@@ -105,15 +136,18 @@ func TestResponse(t *testing.T) {
 	m.HandleFunc("/msg", func(w http.ResponseWriter, r *http.Request) {
 		w.Write(msg)
 	})
+	m.HandleFunc("/error", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	m.HandleFunc("/header", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	})
 	m.HandleFunc("/multipart", func(w http.ResponseWriter, r *http.Request) {
 		r.ParseMultipartForm(1024)
 		mf := r.MultipartForm
 		if mf != nil {
 			w.Write([]byte(mf.Value["value"][0]))
 		}
-	})
-	m.HandleFunc("/error", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
 	})
 	addr := ":8080"
 	ln, err := net.Listen("tcp", addr)
@@ -154,6 +188,9 @@ func TestResponse(t *testing.T) {
 	testHTTP("GET", "http://"+addr+"/chunked", http.StatusOK, "Hello World!\r\n", t)
 	testHTTP("GET", "http://"+addr+"/msg", http.StatusOK, string(msg), t)
 	testHTTP("GET", "http://"+addr+"/error", http.StatusBadRequest, "", t)
+	header := make(map[string]string)
+	header["Access-Control-Allow-Origin"] = "*"
+	testHeader("GET", "http://"+addr+"/header", http.StatusOK, "", header, t)
 	values := make(map[string]io.Reader)
 	values["value"] = bytes.NewReader(msg)
 	testMultipart("http://"+addr+"/multipart", http.StatusOK, string(msg), values, t)
