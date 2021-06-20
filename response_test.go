@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -134,6 +135,7 @@ func TestResponse(t *testing.T) {
 		w.Write([]byte(" World!\r\n"))
 	})
 	m.HandleFunc("/msg", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(contentLength, strconv.FormatInt(int64(len(msg)), 10))
 		w.Write(msg)
 	})
 	m.HandleFunc("/error", func(w http.ResponseWriter, r *http.Request) {
