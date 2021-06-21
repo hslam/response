@@ -110,6 +110,7 @@ func testMultipart(url string, status int, result string, values map[string]io.R
 	req.Header.Set("Content-Type", w.FormDataContentType())
 	if resp, err := client.Do(req); err != nil {
 		t.Error(err)
+
 	} else if resp.StatusCode != status {
 		t.Error(resp.StatusCode)
 	} else if body, err := ioutil.ReadAll(resp.Body); err != nil {
@@ -139,6 +140,7 @@ func TestResponse(t *testing.T) {
 		w.Write(msg)
 	})
 	m.HandleFunc("/error", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(contentLength, "invalid content length header")
 		w.WriteHeader(http.StatusBadRequest)
 	})
 	m.HandleFunc("/header", func(w http.ResponseWriter, r *http.Request) {
