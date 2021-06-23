@@ -137,8 +137,16 @@ func TestResponse(t *testing.T) {
 	})
 	m.HandleFunc("/msg", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(contentLength, strconv.FormatInt(int64(len(msg)), 10))
-		w.Write(msg)
-		w.Write(nil)
+		if n, err := w.Write(msg); err != nil {
+			t.Error(err)
+		} else if n != len(msg) {
+			t.Errorf("length error %d %d", n, len(msg))
+		}
+		if n, err := w.Write(nil); err != nil {
+			t.Error(err)
+		} else if n != 0 {
+			t.Errorf("length error %d %d", n, 0)
+		}
 	})
 	m.HandleFunc("/error", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(contentLength, "invalid content length header")
