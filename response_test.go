@@ -148,6 +148,19 @@ func TestResponse(t *testing.T) {
 			t.Errorf("length error %d %d", n, 0)
 		}
 	})
+	m.HandleFunc("/length", func(w http.ResponseWriter, r *http.Request) {
+		length := len(msg) / 2
+		w.Header().Set(contentLength, strconv.FormatInt(int64(length), 10))
+		if _, err := w.Write(msg); err == nil {
+			t.Error()
+		} else {
+			if n, err := w.Write(msg[:length]); err != nil {
+				t.Error(err)
+			} else if n != length {
+				t.Errorf("length error %d %d", n, len(msg))
+			}
+		}
+	})
 	m.HandleFunc("/error", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(contentLength, "invalid content length header")
 		w.WriteHeader(http.StatusBadRequest)
@@ -200,6 +213,7 @@ func TestResponse(t *testing.T) {
 	testHTTP("GET", "http://"+addr+"/", http.StatusOK, "Hello World!\r\n", t)
 	testHTTP("GET", "http://"+addr+"/chunked", http.StatusOK, "Hello World!\r\n", t)
 	testHTTP("GET", "http://"+addr+"/msg", http.StatusOK, string(msg), t)
+	testHTTP("GET", "http://"+addr+"/length", http.StatusOK, string(msg[:len(msg)/2]), t)
 	testHTTP("GET", "http://"+addr+"/error", http.StatusBadRequest, "", t)
 	header := make(map[string]string)
 	header["Access-Control-Allow-Origin"] = "*"
