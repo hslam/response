@@ -216,11 +216,12 @@ func (w *Response) Write(data []byte) (n int, err error) {
 		return 0, http.ErrBodyNotAllowed
 	}
 	if !w.cw.chunking {
-		offset := w.written
-		w.written += int64(lenData) // ignoring errors, for errorKludge
-		if w.contentLength != -1 && w.written > w.contentLength {
+		written := w.written + int64(lenData)
+		if w.contentLength != -1 && written > w.contentLength {
 			return 0, http.ErrContentLength
 		}
+		offset := w.written
+		w.written = written
 		if !w.noCache && w.written <= int64(len(w.buffer)) {
 			n = copy(w.buffer[offset:w.written], data)
 			return
