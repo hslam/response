@@ -164,6 +164,7 @@ func TestResponse(t *testing.T) {
 	m.HandleFunc("/error", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(contentLength, "invalid content length header")
 		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusOK)
 	})
 	m.HandleFunc("/header", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
