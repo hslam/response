@@ -137,6 +137,7 @@ func TestResponse(t *testing.T) {
 	})
 	m.HandleFunc("/msg", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(contentLength, strconv.FormatInt(int64(len(msg)), 10))
+		w.Header().Set(contentType, defaultContentType)
 		if n, err := w.Write(msg); err != nil {
 			t.Error(err)
 		} else if n != len(msg) {
