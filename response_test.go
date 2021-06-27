@@ -120,6 +120,8 @@ func testMultipart(url string, status int, result string, values map[string]io.R
 	}
 }
 
+var testConnected = "200 Connected to Server"
+
 func TestResponse(t *testing.T) {
 	m := http.NewServeMux()
 	length := 1024 * 64
@@ -166,6 +168,9 @@ func TestResponse(t *testing.T) {
 		w.Header().Set(contentLength, "invalid content length header")
 		w.WriteHeader(http.StatusBadRequest)
 		w.WriteHeader(http.StatusOK)
+	})
+	m.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
+		testConnect(w, r, t)
 	})
 	m.HandleFunc("/header", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -217,6 +222,7 @@ func TestResponse(t *testing.T) {
 	testHTTP("GET", "http://"+addr+"/msg", http.StatusOK, string(msg), t)
 	testHTTP("GET", "http://"+addr+"/length", http.StatusOK, string(msg[:len(msg)/2]), t)
 	testHTTP("GET", "http://"+addr+"/error", http.StatusBadRequest, "", t)
+	testDialHTTPPath(addr, "/connect", t)
 	header := make(map[string]string)
 	header["Access-Control-Allow-Origin"] = "*"
 	testHeader("GET", "http://"+addr+"/header", http.StatusOK, "", header, t)
@@ -225,6 +231,59 @@ func TestResponse(t *testing.T) {
 	testMultipart("http://"+addr+"/multipart", http.StatusOK, string(msg), values, t)
 	ln.Close()
 	wg.Wait()
+}
+
+func testConnect(w http.ResponseWriter, r *http.Request, t *testing.T) {
+	if r.Method != "CONNECT" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		io.WriteString(w, "405 must CONNECT\n")
+		t.Error("405 must CONNECT: ", r.Method)
+	}
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		t.Error(err)
+	}
+	io.WriteString(conn, "HTTP/1.0 "+testConnected+"\n\n")
+	_, err = conn.Write([]byte("PING"))
+	if err != nil {
+		t.Error(err)
+	}
+	buf := make([]byte, 1024)
+	if n, err := conn.Read(buf); err != nil {
+		t.Error(err)
+	} else if string(buf[:n]) != "PONG" {
+		t.Error(string(buf[:n]))
+	}
+	conn.Close()
+}
+
+func testDialHTTPPath(address, path string, t *testing.T) {
+	var err error
+	var network = "tcp"
+	conn, err := net.Dial(network, address)
+	if err != nil {
+		t.Error(err)
+	}
+	io.WriteString(conn, "CONNECT "+path+" HTTP/1.0\n\n")
+	reader := bufio.NewReader(conn)
+	// Require successful HTTP response
+	// before switching to Your protocol.
+	resp, err := http.ReadResponse(reader, &http.Request{Method: "CONNECT"})
+	if err == nil && resp.Status == testConnected {
+		buf := make([]byte, 1024)
+		if n, err := reader.Read(buf); err != nil {
+			t.Error(err)
+		} else if string(buf[:n]) != "PING" {
+			t.Error(string(buf[:n]))
+		}
+		conn.Write([]byte("PONG"))
+		return
+	}
+	if err == nil {
+		t.Error("unexpected HTTP response: " + resp.Status)
+	}
+	conn.Close()
 }
 
 func TestNewBufioReader(t *testing.T) {
