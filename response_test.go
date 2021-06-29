@@ -171,6 +171,10 @@ func TestResponse(t *testing.T) {
 	})
 	m.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
 		testConnect(w, r, t)
+		_, err := w.Write(nil)
+		if err != http.ErrHijacked {
+			t.Error(err)
+		}
 	})
 	m.HandleFunc("/header", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
