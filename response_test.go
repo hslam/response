@@ -171,6 +171,9 @@ func TestResponse(t *testing.T) {
 	})
 	m.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
 		testConnect(w, r, t)
+		if _, _, err := w.(http.Hijacker).Hijack(); err != http.ErrHijacked {
+			t.Error(err)
+		}
 		_, err := w.Write(nil)
 		if err != http.ErrHijacked {
 			t.Error(err)
