@@ -217,6 +217,7 @@ func TestResponse(t *testing.T) {
 					res := NewResponse(req, conn, bufio.NewReadWriter(reader, writer))
 					m.ServeHTTP(res, req)
 					res.FinishRequest()
+					res.FinishRequest()
 					FreeResponse(res)
 				}
 				FreeBufioReader(reader)
